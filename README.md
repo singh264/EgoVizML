@@ -1,204 +1,179 @@
 # EgoVizML
 
-This repo contains all code pertaining to my thesis titled "Using wearable technology to inform clinical decision-making in outpatient neurorehabilitation". The overarching goal of this thesis is to identify the factors that affect clinical decision making in outpatient rehabilitation care and determine if wearable technology can deliver actionable information about at-home upper limb performance to better guide care delivery.
+This repository contains all data processing code for the thesis:
 
-More specifically, I hope to:
+> **"Using wearable technology to inform clinical decision-making in outpatient neurorehabilitation"**
+> — Adesh Kadambi
 
-- **(Aim 1)** evaluate the perceived usefulness of delivering hand function metrics extracted from wearable technologies to clinicians in outpatient care,
-- **(Aim 2)** provide at-home hand-use context through the detection of object interactions and activities of daily living (ADLs),
-- **(Aim 3)** explore the decision-making processes and challenges in the delivery of upper-limb neurorehabilitation to determine clinical decision support needs.
+---
 
-# Activity Recognition Pipeline Documentation
+## Repository Structure
 
-## Overview
+```
+EgoVizML/
+├── egoviz/                    # Core Python package
+│   ├── models/                # Feature processing, evaluation, inference
+│   └── cdss_utils/            # Dashboard metrics, survey stats, video utilities
+│
+├── scripts/                   # Runnable pipeline scripts (see Pipeline section)
+├── notebooks/                 # Analysis notebooks (numbered in run order)
+├── data/                      # Processed prediction data (see data/README.md)
+├── models/                    # Trained model artifacts
+├── figures/                   # Output figures from analyses
+├── shan_model/                # Vendored hand-object detector (external repo)
+├── vizlabel/                  # Standalone labeling app
+└── tests/                     # Test suite
+```
 
-This pipeline detects daily living activities by analyzing object interactions in egocentric videos. It uses:
+External repositories that must be cloned separately (see [SETUP.md](SETUP.md)):
 
-1. DETIC object detector
-2. Hand-object interaction detector
-3. Logistic Regression classifier
+- `detectron2/` — Facebook's Detectron2 (required by Detic)
+- `Detic/` — Open-vocabulary object detector
 
-## Pipeline Steps
+---
 
-### 1. Object Classification
+## ADL Recognition Pipeline
 
-`process_detic_data.py` processes raw object detections:
+The pipeline takes raw egocentric video and produces per-video ADL predictions. It has five steps:
 
-- Maps 1000+ DETIC classes to 29 functional categories using CSV mapping
-- Filters out human detections
-- Saves processed predictions as pickle files
+```
+Raw video
+    │
+    ▼
+[Step 1] Extract frames
+    scripts/video_to_subclips_and_frames.py
+    → 60-second subclips at 2 FPS, organized by patient/session
+    │
+    ▼
+[Step 2a] Run Detic (object detection)
+    scripts/run_detic.py
+    → Per-frame object detections saved as .pkl files
+    │
+[Step 2b] Run SHAN (hand-object interaction detection)
+    scripts/run_shan.py
+    → Per-frame hand + contact-object detections saved as .pkl files
+    │
+    ▼
+[Step 3a] Post-process Detic output
+    scripts/process_detic.py
+    → Maps 1000+ Detic classes → 29 functional categories
+    → Filters human detections
+    │
+[Step 3b] Combine Detic + SHAN → active objects
+    scripts/process_all_preds.py
+    → Labels objects as "active" if IoU with hand box > 0.75
+    → Output: home_data_all_preds.pkl
+    │
+    ▼
+[Step 4] Feature generation + classification
+    egoviz/models/processing.py + inference.py
+    → Binary + Active features → Logistic Regression classifier
+    → Best performance: mean F1 = 0.78, AUC = 0.94 (LOGOCV)
+    │
+    ▼
+[Step 5] Dashboard metrics
+    scripts/get_dashboard_metrics.py
+    → Computes metrics for the clinical dashboard
+```
 
-### 2. Active Object Detection
+### Expected folder structure for raw data
 
-`process_all_preds.py` identifies objects being interacted with:
-
-- Combines DETIC object boxes with hand interaction boxes
-- Labels objects as "active" if IoU with hand box > 0.75
-- Organizes by activity type and video
-- Saves combined predictions as `all_preds.pkl`
-
-### 3. Feature Generation
-
-`processing.py` creates features for classification:
-
-- `generate_df_from_preds()`: Converts predictions to DataFrame
-- `generate_binary_presence_df()`: Creates binary features (object present/not present)
-- `generate_counts_df()`: Creates count-based features
-- `row_wise_min_max_scaling()`: Normalizes features per video
-
-### 4. Model Training and Evaluation
-
-`evaluation.py` handles model training/testing:
-
-- Uses leave-one-subject-out cross-validation
-- Best configuration: Binary + Active features with Logistic Regression
-- Performance: 0.78 mean F1-score across subjects
-
-## Usage
-
-```python
-# 1. Generate active object labels
-python process_all_preds.py /path/to/data --active_iou 0.75
-
-"""
-The pipeline expects object detection and hand-object interaction predictions organized in this structure:
-
-root_directory/
+```
+data_root/
 ├── communication-management/
-│   ├── detic/
-│   │   ├── video1_frame1.pkl
-│   │   └── ...
-│   └── shan/
-│       ├── video1_frame1.pkl
-│       └── ...
+│   └── <patient_id>/
+│       ├── subclips/           ← output of Step 1
+│       └── subclips_shan/      ← output of Step 2b
 ├── functional-mobility/
-│   ├── detic/
-│   └── shan/
-└── ...other activity folders...
-
-It will output a dictionary.
-"""
-
-# 2. Generate features for inference
-from egoviz.models import processing
-from egoviz.models import inference
-
-new_data = processing.generate_df_from_preds(preds_dict_from_step1)
-new_data = processing.generate_binary_presence_df(new_data)
-scaled_data = processing.row_wise_min_max_scaling(new_data)
-
-# 3. Load model
-model = inference.load_production_model("models/binary_active_logreg.joblib")
-
-# 4. Make predictions
-predictions = inference.predict(scaled_data, model)
-
-# 5. Access results
-activities = predictions.select('predicted_label')
-probabilities = predictions.select(pl.col('^prob_.*$'))
+│   └── ...
+└── ...other ADL folders...
 ```
 
-## Data Formats
+### ADL Classes
 
-### Raw DETIC Predictions
+Defined by the American Occupational Therapy Association (AOTA), Occupational Therapy Practice Framework (2020):
 
-```python
-{
-    'boxes': list[list[int]],  # Bounding boxes [x1,y1,x2,y2]
-    'scores': list[float],     # Detection confidence
-    'classes': list[int],      # Original DETIC class IDs
-    'metadata': list[str]      # Original class names
-}
-```
+| Class                        | Description                                        |
+| ---------------------------- | -------------------------------------------------- |
+| `communication-management`   | Use of phones, computers, writing tools            |
+| `functional-mobility`        | Moving from one position or place to another       |
+| `grooming-health-management` | Hair, skin, oral care, medication routines         |
+| `home-management`            | Maintaining household possessions and environment  |
+| `meal-preparation-cleanup`   | Planning, preparing, and serving meals             |
+| `self-feeding`               | Bringing food/fluid from plate or cup to mouth     |
+| `leisure-other-activities`   | Non-obligatory, intrinsically motivated activities |
 
-### Processed Predictions
+---
 
-```python
-{
-    # Original fields +
-    'remapped_metadata': list[str],  # Functional category names
-    'remapped_classes': list[int],   # Functional category IDs
-    'active_objects': list[bool]     # Hand interaction flags
-}
-```
+## Quick Start
 
-### Final Features
-
-Binary + Active configuration creates columns:
-
-- `{object_class}`: Binary presence (0/1)
-- `active_{object_class}`: Binary interaction (0/1)
-- All features scaled per video using min-max scaling
-
-## Dependencies
-
-- PyTorch (torchvision)
-- scikit-learn
-- pandas
-- polars
-- numpy
-
-# Project Setup
-
-1. Clone the repository
-
-2. Install dependencies
+See [SETUP.md](SETUP.md) for full environment setup instructions.
 
 ```bash
+# 1. Install dependencies
 pip install poetry
 poetry install
-```
 
-3. Activate the virtual environment
-
-```bash
+# 2. Activate environment
 poetry shell
+
+# 3. Run tests to verify everything works
+pytest tests/
 ```
 
-# Dependency Management
+### Running inference on new data
 
-You can add and remove dependencies using the following:
+```python
+from egoviz.models import processing, inference
+
+# Load processed predictions (output of scripts/process_all_preds.py)
+preds = processing.load_pickle("data/home_data_all_preds.pkl")
+
+# Generate features
+df = processing.generate_df_from_preds(preds)
+df_features = processing.generate_binary_presence_df(df)
+df_scaled = processing.row_wise_min_max_scaling(df_features)
+
+# Load model and predict
+model = inference.load_production_model("models/binary_active_logreg.joblib")
+predictions = inference.predict(df_scaled, model)
+
+# Access results
+print(predictions.select(["predicted_label"]))
+```
+
+---
+
+## Key Results
+
+The best model configuration (Binary + Active features, Logistic Regression) achieved:
+
+| Metric                  | Value |
+| ----------------------- | ----- |
+| Mean F1 (LOGOCV)        | 0.785 |
+| Median F1 (LOGOCV)      | 0.812 |
+| AUC                     | 0.94  |
+| % subjects above 0.5 F1 | 100%  |
+
+See `notebooks/13_FULL_ABLATION_STUDY.ipynb` for the full comparison across feature sets and classifiers.
+
+---
+
+## Notebooks
+
+See [notebooks/README.md](notebooks/README.md) for a guide to the analysis notebooks.
+
+---
+
+## Dependency Management
 
 ```bash
+# Add a dependency
 poetry add <package>
+
+# Remove a dependency
 poetry remove <package>
-```
 
-To update the egoviz package:
-
-```bash
-pip uninstall egoviz
+# Update the egoviz package after changes
 poetry install
 ```
-
-# ADL Detection Classes
-
-Defined by the American Occupational Therapy Association (AOTA) in the Occupational Therapy Practice Framework: Domain and Process (2020).
-
-## Feeding
-
-_Setting up, arranging, and bringing food [or fluid] from the plate or cup to the mouth; sometimes called self-feeding._
-
-## Functional Mobility
-
-_Moving from one position or place to another (during performance of everyday activities), such as in-bed mobility, wheelchair mobility, and transfers (e.g., wheelchair, bed, car, shower, tub, toilet, chair, floor). Includes functional ambulation and transportation of objects._
-
-## Grooming / Health Management
-
-_Obtaining and using supplies; removing body hair (e.g., using razor, tweezers, lotion); applying and removing cosmetics; washing, drying, combing, styling, brushing, and trimming hair; caring for nails (hands and feet); caring for skin, ears, eyes, and nose; applying deodorant; cleaning mouth; brushing and flossing teeth; and removing, cleaning, and reinserting dental orthotics and prosthetics. Developing, managing, and maintaining routines for health and wellness promotion, such as physical fitness, nutrition, decreased health risk behaviors, and medication routines._
-
-## Communication Management
-
-_Sending, receiving, and interpreting information using a variety of systems and equipment, including writing tools, telephones (cell phones or smartphones), keyboards, audiovisual recorders, computers or tablets, communication boards, call lights, emergency systems, Braille writers, telecommunication devices for deaf people, augmentative communication systems, and personal digital assistants._
-
-## Home Establishment and Management
-
-_Obtaining and maintaining personal and household possessions and environment (e.g., home, yard, garden, appliances, vehicles), including maintaining and repairing personal possessions (e .g ., clothing, household items) and knowing how to seek help or whom to contact._
-
-## Meal Preparation and Cleanup
-
-_Planning, preparing, and serving well-balanced, nutritious meals and cleaning up food and utensils after meals._
-
-## Leisure and Other
-
-_Nonobligatory activity that is intrinsically motivated and engaged in during discretionary time, that is, time not committed to obligatory occupations or any of the aforementioned ADLs or iADLs._

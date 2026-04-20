@@ -126,27 +126,6 @@ def predict(new_data: pl.DataFrame, production_model: ProductionModel) -> pl.Dat
     return results
 
 
-def row_wise_min_max_scaling(df: pl.DataFrame) -> pl.DataFrame:
-    """
-    Apply row-wise min-max scaling to feature columns.
-    Preserves 'video' and 'adl' columns.
-    """
-    # Identify feature columns (exclude 'video' and 'adl')
-    feature_cols = [col for col in df.columns if col not in ["video", "adl"]]
-
-    # Calculate row-wise min and max
-    row_min = df.select(feature_cols).row_min()
-    row_max = df.select(feature_cols).row_max()
-
-    # Apply scaling to feature columns
-    scaled_features = (df.select(feature_cols) - row_min) / (row_max - row_min)
-
-    # Combine with non-feature columns
-    result = pl.concat([df.select(["video", "adl"]), scaled_features], how="horizontal")
-
-    return result
-
-
 def load_production_model(model_path: str) -> ProductionModel:
     """Load the production model and its metadata."""
     return joblib.load(model_path)
