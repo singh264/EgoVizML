@@ -739,25 +739,6 @@ files = [
 ]
 
 [[package]]
-name = "egoviz"
-version = "0.1.0"
-description = ""
-optional = false
-python-versions = "*"
-files = []
-develop = true
-
-[package.dependencies]
-moviepy = ">=1.0.3"
-opencv-python = "*"
-scikit-learn = "*"
-seaborn = "*"
-
-[package.source]
-type = "directory"
-url = "src"
-
-[[package]]
 name = "executing"
 version = "2.0.0"
 description = "Get the currently executing AST node of a frame, and other information"
@@ -4128,4 +4109,4 @@ testing = ["big-O", "jaraco.functools", "jaraco.itertools", "more-itertools", "p
 [metadata]
 lock-version = "2.0"
 python-versions = ">=3.11,<3.13"
-content-hash = "f3f7a307f7fa97a742f9b27e200a018b8c8ab077f5119420ae7fd885fe83a8a7"
+content-hash = "97b1cc94c3674edd00225710a982af148c08573863b72d9ced437c76af5e475d"
