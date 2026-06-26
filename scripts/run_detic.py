@@ -22,7 +22,6 @@ import argparse
 import glob
 import os
 import cv2
-import tqdm
 import pickle
 import concurrent.futures
 import logging
@@ -39,6 +38,7 @@ from detic.config import add_detic_config
 
 from detic.predictor import VisualizationDemo
 from detectron2.data import MetadataCatalog
+from egoviz.egomodelkit_progress import emit_progress
 
 
 def setup_cfg(args):
@@ -147,6 +147,8 @@ def process_image(input_path, args, demo):
     with open(out_filename_pkl, "wb") as file:
         pickle.dump(preds, file)
 
+    return input_path
+
 
 if __name__ == "__main__":
     args = get_parser().parse_args()
@@ -166,8 +168,15 @@ if __name__ == "__main__":
             for input_path in input_paths
         ]
 
-        # Ensure all tasks are completed
-        for future in tqdm.tqdm(
-            concurrent.futures.as_completed(futures), total=len(futures)
-        ):
-            pass
+        completed = 0
+        total = len(futures)
+
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+            completed += 1
+
+            emit_progress(
+                "detic_frame_processed",
+                current=completed,
+                total=total,
+            )

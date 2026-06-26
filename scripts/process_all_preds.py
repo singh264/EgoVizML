@@ -14,9 +14,9 @@ import numpy as np
 import torch
 from process_detic import _load_mapping_df, process_detic_preds
 from torchvision.ops import box_iou
-from tqdm import tqdm
 
 from egoviz.models.processing import load_pickle
+from egoviz.egomodelkit_progress import emit_progress
 
 
 def get_active_objects(
@@ -37,6 +37,46 @@ def get_active_objects(
         return np.array([False] * len(detic_boxes))
     else:
         return np.array([])
+
+
+def collect_prediction_pairs(dirpath: str, adls: list) -> list:
+    """ Collect matched Detic/Shan prediction files across ADL folders. """
+    prediction_pairs = []
+
+    for adl in adls:
+        logging.info(f"Processing {adl}...")
+
+        detic_dirpath = os.path.join(dirpath, adl, "detic")
+        shan_dirpath = os.path.join(dirpath, adl, "shan")
+
+        if not os.path.exists(detic_dirpath) or not os.path.exists(shan_dirpath):
+            continue
+
+        detic_pkl_files = sorted(
+            f for f in os.listdir(detic_dirpath) if f.endswith(".pkl")
+        )
+        
+        shan_pkl_files = sorted(
+            f for f in os.listdir(shan_dirpath) if f.endswith(".pkl")
+        )
+
+        logging.info(f"First 5 files for {adl} detic:")
+        logging.info(detic_pkl_files[:5])
+        logging.info(f"First 5 files for {adl} shan:")
+        logging.info(shan_pkl_files[:5])
+
+        for detic_file, shan_file in zip(detic_pkl_files, shan_pkl_files):
+            prediction_pairs.append(
+                (
+                    adl,
+                    detic_dirpath,
+                    shan_dirpath,
+                    detic_file,
+                    shan_file,
+                )
+            )
+
+    return prediction_pairs
 
 
 def process_all_preds(dirpath: str, active_iou: float) -> dict:
@@ -71,56 +111,53 @@ def process_all_preds(dirpath: str, active_iou: float) -> dict:
         # add any subfolders here
     ]
 
-    for adl in adls:
-        logging.info(f"Processing {adl}...")
+    prediction_pairs = collect_prediction_pairs(dirpath, adls)
+    total_frames = len(prediction_pairs)
+    mapping_df = _load_mapping_df()
 
-        detic_dirpath = os.path.join(dirpath, adl, "detic")
-        shan_dirpath = os.path.join(dirpath, adl, "shan")
+    emit_progress(
+        "adl_prediction_frames_discovered",
+        current = 0,
+        total = total_frames,
+    )
 
-        if os.path.exists(detic_dirpath):
-            detic_pkl_files = [
-                f for f in os.listdir(detic_dirpath) if f.endswith(".pkl")
-            ]
+    for processed_frames, (
+        adl,
+        detic_dirpath,
+        shan_dirpath,
+        detic_file,
+        shan_file,
+    ) in enumerate(prediction_pairs, start=1):
+        detic_filepath = os.path.join(detic_dirpath, detic_file)
+        shan_filepath = os.path.join(shan_dirpath, shan_file)
 
-        if os.path.exists(shan_dirpath):
-            shan_pkl_files = [f for f in os.listdir(shan_dirpath) if f.endswith(".pkl")]
+        detic_preds = load_pickle(detic_filepath)
+        shan_preds = load_pickle(shan_filepath)
 
-        # sort the pkl files so they align for detic and shan
-        detic_pkl_files.sort()
-        shan_pkl_files.sort()
+        # process detic preds
+        detic_preds = process_detic_preds(detic_preds, mapping_df)
 
-        # log first 5 files for both detic and shan to check if they align
-        logging.info(f"First 5 files for {adl} detic:")
-        logging.info(detic_pkl_files[:5])
-        logging.info(f"First 5 files for {adl} shan:")
-        logging.info(shan_pkl_files[:5])
+        # get active objects from shan preds
+        shan_boxes = shan_preds["objects"] if shan_preds is not None else None
+        detic_boxes = detic_preds["boxes"]
+        active_objects = get_active_objects(detic_boxes, shan_boxes, active_iou)
 
-        # load mapping df
-        mapping_df = _load_mapping_df()
+        # add active objects to detic preds
+        detic_preds["active_objects"] = active_objects
 
-        for detic_file, shan_file in tqdm(zip(detic_pkl_files, shan_pkl_files)):
-            detic_filepath = os.path.join(detic_dirpath, detic_file)
-            shan_filepath = os.path.join(shan_dirpath, shan_file)
+        # get video name
+        video = detic_file.split("_")[0] + "_" + detic_file.split("_")[1]
 
-            detic_preds = load_pickle(detic_filepath)
-            shan_preds = load_pickle(shan_filepath)
+        # add to all_preds
+        all_preds[f"{adl}_{video}"] = detic_preds
 
-            # process detic preds
-            detic_preds = process_detic_preds(detic_preds, mapping_df)
-
-            # get active objects from shan preds
-            shan_boxes = shan_preds["objects"] if shan_preds is not None else None
-            detic_boxes = detic_preds["boxes"]
-            active_objects = get_active_objects(detic_boxes, shan_boxes, active_iou)
-
-            # add active objects to detic preds
-            detic_preds["active_objects"] = active_objects
-
-            # get video name
-            video = detic_file.split("_")[0] + "_" + detic_file.split("_")[1]
-
-            # add to all_preds
-            all_preds[f"{adl}_{video}"] = detic_preds
+        emit_progress(
+            "adl_prediction_frame_processed",
+            current = processed_frames,
+            total = total_frames,
+            adl = adl,
+            frame = detic_file,
+        )
 
     # save all_preds
     savepath = os.path.join(dirpath, "all_preds.pkl")
@@ -144,6 +181,8 @@ def main():
 
     args = parser.parse_args()
 
+    emit_progress("adl_predictions_combining")
+
     print(f"Processing and computing active objects in {args.dirpath}...")
 
     logging.basicConfig(
@@ -152,6 +191,8 @@ def main():
     )
 
     process_all_preds(args.dirpath, args.active_iou)
+
+    emit_progress("adl_predictions_combined")
 
 
 if __name__ == "__main__":
