@@ -1,0 +1,4 @@
+egoviz/cdss_utils/video_processing.py text eol=lf
+scripts/process_all_preds.py text eol=lf
+scripts/run_detic.py text eol=lf
+egoviz/egomodelkit_progress.py text eol=lf
