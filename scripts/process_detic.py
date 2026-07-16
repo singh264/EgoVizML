@@ -2,6 +2,7 @@ import os
 import pickle
 import argparse
 import logging
+from pathlib import Path
 
 from tqdm import tqdm
 
@@ -11,10 +12,25 @@ import pandas as pd
 from egoviz.models.processing import load_pickle
 
 
-def _load_mapping_df():
-    """Load the mapping dataframe."""
-    url = "https://docs.google.com/spreadsheets/d/1X6g7qLgrRNCG3ou6thtGThSjH5U4200l/export?gid=1445909165&format=csv"
-    return pd.read_csv(url, index_col=0)
+DETIC_CLASS_MAPPING_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "data"
+    / "detic_class_mapping.csv"
+)
+
+
+def _load_mapping_df() -> pd.DataFrame:
+    """ Load the local Detic-to-functional-category mapping. """
+    if not DETIC_CLASS_MAPPING_PATH.is_file():
+        raise FileNotFoundError(
+            "Detic class mapping file was not found: "
+            f"{DETIC_CLASS_MAPPING_PATH}"
+        )
+
+    return pd.read_csv(
+        DETIC_CLASS_MAPPING_PATH,
+        index_col="class_ids",
+    )
 
 
 def remap_detic_classes(orig_classes: list[int], mapping_df: pd.DataFrame) -> list[str]:
